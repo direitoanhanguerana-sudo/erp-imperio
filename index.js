@@ -1,119 +1,200 @@
 const express = require("express");
-const { Pool } = require("pg");
 const cors = require("cors");
+const path = require("path");
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+let produtos = [];
+let clientes = [];
+let pedidos = [];
+
+let produtoId = 1;
+let clienteId = 1;
+let pedidoId = 1;
+
+/* ================= DASHBOARD ================= */
+
+app.get("/dashboard", (req, res) => {
+  const vendasTotal = pedidos.reduce((acc, p) => acc + p.total, 0);
+  const estoqueBaixo = produtos.filter(p => p.estoque < 10).length;
+
+  res.json({
+    vendas_hoje: vendasTotal,
+    vendas_mes: vendasTotal,
+    total_pedidos: pedidos.length,
+    total_clientes: clientes.length,
+    produtos_estoque_baixo: estoqueBaixo
+  });
 });
 
-async function criarTabelas() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS produtos (
-      id SERIAL PRIMARY KEY,
-      nome VARCHAR(100) NOT NULL,
-      preco NUMERIC(10,2) NOT NULL,
-      estoque INTEGER NOT NULL DEFAULT 0
-    );
-  `);
-}
+/* ================= PRODUTOS ================= */
+
+app.get("/produtos", (req, res) => {
+  res.json(produtos);
+});
+
+app.post("/produtos", (req, res) => {
+  const { nome, preco, estoque } = req.body;
+
+  const novoProduto = {
+    id: produtoId++,
+    nome,
+    preco: Number(preco),
+    estoque: Number(estoque)
+  };
+
+  produtos.push(novoProduto);
+  res.json(novoProduto);
+});
+
+/* ================= CLIENTES ================= */
+
+app.get("/clientes", (req, res) => {
+  res.json(clientes);
+});
+
+app.post("/clientes", (req, res) => {
+  const { nome, telefone, email, endereco } = req.body;
+
+  const novoCliente = {
+    id: clienteId++,
+    nome,
+    telefone,
+    email,
+    endereco,
+    criado_em: new Date()
+  };
+
+  clientes.push(novoCliente);
+  res.json(novoCliente);
+});
+
+/* ================= PEDIDOS ================= */
+
+app.post("/pedidos", (req, res) => {
+  const { cliente_id, itens } = req.body;
+
+  let total = 0;
+
+  itens.forEach(item => {
+    const produto = produtos.find(p => p.id === item.produto_id);
+
+    if (!produto) {
+      return res.status(400).json({ erro: "Produto não encontrado" });
+    }
+
+    if (produto.estoque < item.quantidade) {
+      return res.status(400).json({ erro: "Estoque insuficiente" });
+    }
+
+    produto.estoque -= item.quantidade;
+    total += produto.preco * item.quantidade;
+  });
+
+  const novoPedido = {
+    id: pedidoId++,
+    cliente_id,
+    itens,
+    total,
+    criado_em: new Date()
+  };
+
+  pedidos.push(novoPedido);
+
+  res.json({
+    mensagem: "Pedido criado com sucesso",
+    pedido_id: novoPedido.id,
+    total
+  });
+});
+
+/* ================= PAINEL VISUAL ================= */
 
 app.get("/", (req, res) => {
-  res.redirect("/dashboard");
-});
-
-app.get("/dashboard", async (req, res) => {
-  const vendas = await pool.query("SELECT COALESCE(SUM(total),0) as total FROM pedidos");
-  const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
-  const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
-  const estoqueBaixo = await pool.query("SELECT COUNT(*) FROM produtos WHERE estoque < 5");
-
   res.send(`
   <html>
   <head>
-  <title>ERP Império</title>
-  <style>
-  body { background:#0f0f0f; color:white; font-family:Arial; text-align:center; }
-  .card { background:#1c1c1c; padding:20px; margin:15px; border-radius:10px; display:inline-block; width:200px;}
-  .valor { color:#00ff88; font-size:22px; font-weight:bold;}
-  a { color:#00ff88; text-decoration:none; display:block; margin-top:20px;}
-  </style>
+    <title>ERP Império Distribuidora</title>
+    <style>
+      body {
+        font-family: Arial;
+        background: #f5f6fa;
+        margin: 0;
+        padding: 30px;
+      }
+      h1 {
+        text-align: center;
+      }
+      .container {
+        max-width: 1000px;
+        margin: auto;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+        margin-top: 30px;
+      }
+      .card {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        text-align: center;
+      }
+      .valor {
+        font-size: 22px;
+        font-weight: bold;
+        color: #00b894;
+        margin-top: 10px;
+      }
+      .menu {
+        text-align: center;
+        margin-top: 40px;
+      }
+      .menu a {
+        margin: 10px;
+        padding: 10px 20px;
+        background: #0984e3;
+        color: white;
+        text-decoration: none;
+        border-radius: 5px;
+      }
+    </style>
   </head>
   <body>
-  <h1>🚀 ERP Império Distribuidora</h1>
-  <div class="card"><div>Vendas</div><div class="valor">R$ ${vendas.rows[0].total}</div></div>
-  <div class="card"><div>Pedidos</div><div class="valor">${pedidos.rows[0].count}</div></div>
-  <div class="card"><div>Clientes</div><div class="valor">${clientes.rows[0].count}</div></div>
-  <div class="card"><div>Estoque Baixo</div><div class="valor">${estoqueBaixo.rows[0].count}</div></div>
-  <a href="/produtos-ui">➕ Cadastrar Produto</a>
+    <div class="container">
+      <h1>🚀 ERP Império Distribuidora</h1>
+      <div class="cards">
+        <div class="card">
+          <div>Vendas Totais</div>
+          <div class="valor">R$ ${pedidos.reduce((acc, p) => acc + p.total, 0).toFixed(2)}</div>
+        </div>
+        <div class="card">
+          <div>Total Pedidos</div>
+          <div class="valor">${pedidos.length}</div>
+        </div>
+        <div class="card">
+          <div>Total Clientes</div>
+          <div class="valor">${clientes.length}</div>
+        </div>
+        <div class="card">
+          <div>Estoque Baixo</div>
+          <div class="valor">${produtos.filter(p => p.estoque < 10).length}</div>
+        </div>
+      </div>
+
+      <div class="menu">
+        <a href="/produtos">Produtos</a>
+        <a href="/clientes">Clientes</a>
+      </div>
+    </div>
   </body>
   </html>
   `);
 });
 
-app.get("/produtos-ui", async (req, res) => {
-  const produtos = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
-
-  let lista = produtos.rows.map(p => `
-    <tr>
-      <td>${p.nome}</td>
-      <td>R$ ${p.preco}</td>
-      <td>${p.estoque}</td>
-    </tr>
-  `).join("");
-
-  res.send(`
-  <html>
-  <head>
-  <title>Produtos</title>
-  <style>
-  body { background:#0f0f0f; color:white; font-family:Arial; text-align:center;}
-  input { padding:8px; margin:5px; border-radius:5px; border:none;}
-  button { padding:10px 20px; background:#00ff88; border:none; border-radius:5px; cursor:pointer;}
-  table { margin:auto; margin-top:20px; border-collapse:collapse;}
-  td, th { padding:8px 15px; border-bottom:1px solid #333;}
-  a { color:#00ff88; text-decoration:none; display:block; margin-top:20px;}
-  </style>
-  </head>
-  <body>
-  <h2>Cadastro de Produto</h2>
-  <form method="POST" action="/produtos-form">
-    <input name="nome" placeholder="Nome do produto" required/>
-    <input name="preco" type="number" step="0.01" placeholder="Preço" required/>
-    <input name="estoque" type="number" placeholder="Estoque" required/>
-    <br><br>
-    <button type="submit">Cadastrar</button>
-  </form>
-
-  <table>
-    <tr><th>Nome</th><th>Preço</th><th>Estoque</th></tr>
-    ${lista}
-  </table>
-
-  <a href="/dashboard">⬅ Voltar</a>
-  </body>
-  </html>
-  `);
-});
-
-app.use(express.urlencoded({ extended: true }));
-
-app.post("/produtos-form", async (req, res) => {
-  const { nome, preco, estoque } = req.body;
-  await pool.query(
-    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3)",
-    [nome, preco, estoque]
-  );
-  res.redirect("/produtos-ui");
-});
-
-const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, async () => {
-  await criarTabelas();
-  console.log("Servidor rodando...");
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Servidor rodando"));
