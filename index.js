@@ -3,184 +3,117 @@ const { Pool } = require("pg");
 const cors = require("cors");
 
 const app = express();
-
-app.use(cors());
 app.use(express.json());
+app.use(cors());
 
-// ==========================
-// CONEXÃO COM BANCO
-// ==========================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  ssl: { rejectUnauthorized: false }
 });
 
-// ==========================
-// ROTA PRINCIPAL (PAINEL)
-// ==========================
-app.get("/", async (req, res) => {
-  try {
-    const vendasHoje = await pool.query(
-      "SELECT COALESCE(SUM(total),0) as total FROM pedidos WHERE DATE(criado_em) = CURRENT_DATE"
+async function criarTabelas() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS produtos (
+      id SERIAL PRIMARY KEY,
+      nome VARCHAR(100) NOT NULL,
+      preco NUMERIC(10,2) NOT NULL,
+      estoque INTEGER NOT NULL DEFAULT 0
     );
+  `);
+}
 
-    const vendasMes = await pool.query(
-      "SELECT COALESCE(SUM(total),0) as total FROM pedidos WHERE DATE_TRUNC('month', criado_em) = DATE_TRUNC('month', CURRENT_DATE)"
-    );
-
-    const totalPedidos = await pool.query(
-      "SELECT COUNT(*) FROM pedidos"
-    );
-
-    const totalClientes = await pool.query(
-      "SELECT COUNT(*) FROM clientes"
-    );
-
-    const estoqueBaixo = await pool.query(
-      "SELECT COUNT(*) FROM produtos WHERE estoque < 10"
-    );
-
-    res.send(`
-      <html>
-      <head>
-        <title>ERP Império Distribuidora</title>
-        <style>
-          body {
-            font-family: Arial;
-            background: #111;
-            color: white;
-            text-align: center;
-          }
-          h1 {
-            margin-top: 30px;
-          }
-          .card {
-            background: #1e1e1e;
-            padding: 20px;
-            margin: 20px;
-            border-radius: 10px;
-            display: inline-block;
-            width: 250px;
-          }
-          .valor {
-            font-size: 28px;
-            font-weight: bold;
-            margin-top: 10px;
-            color: #00ff88;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>🚀 ERP Império Distribuidora</h1>
-
-        <div class="card">
-          <div>Vendas Hoje</div>
-          <div class="valor">R$ ${vendasHoje.rows[0].total}</div>
-        </div>
-
-        <div class="card">
-          <div>Vendas Mês</div>
-          <div class="valor">R$ ${vendasMes.rows[0].total}</div>
-        </div>
-
-        <div class="card">
-          <div>Total Pedidos</div>
-          <div class="valor">${totalPedidos.rows[0].count}</div>
-        </div>
-
-        <div class="card">
-          <div>Total Clientes</div>
-          <div class="valor">${totalClientes.rows[0].count}</div>
-        </div>
-
-        <div class="card">
-          <div>Produtos Estoque Baixo</div>
-          <div class="valor">${estoqueBaixo.rows[0].count}</div>
-        </div>
-
-      </body>
-      </html>
-    `);
-
-  } catch (error) {
-    res.status(500).json({ erro: error.message });
-  }
+app.get("/", (req, res) => {
+  res.redirect("/dashboard");
 });
 
-// ==========================
-// PRODUTOS
-// ==========================
-app.get("/produtos", async (req, res) => {
-  const result = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
-  res.json(result.rows);
+app.get("/dashboard", async (req, res) => {
+  const vendas = await pool.query("SELECT COALESCE(SUM(total),0) as total FROM pedidos");
+  const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
+  const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
+  const estoqueBaixo = await pool.query("SELECT COUNT(*) FROM produtos WHERE estoque < 5");
+
+  res.send(`
+  <html>
+  <head>
+  <title>ERP Império</title>
+  <style>
+  body { background:#0f0f0f; color:white; font-family:Arial; text-align:center; }
+  .card { background:#1c1c1c; padding:20px; margin:15px; border-radius:10px; display:inline-block; width:200px;}
+  .valor { color:#00ff88; font-size:22px; font-weight:bold;}
+  a { color:#00ff88; text-decoration:none; display:block; margin-top:20px;}
+  </style>
+  </head>
+  <body>
+  <h1>🚀 ERP Império Distribuidora</h1>
+  <div class="card"><div>Vendas</div><div class="valor">R$ ${vendas.rows[0].total}</div></div>
+  <div class="card"><div>Pedidos</div><div class="valor">${pedidos.rows[0].count}</div></div>
+  <div class="card"><div>Clientes</div><div class="valor">${clientes.rows[0].count}</div></div>
+  <div class="card"><div>Estoque Baixo</div><div class="valor">${estoqueBaixo.rows[0].count}</div></div>
+  <a href="/produtos-ui">➕ Cadastrar Produto</a>
+  </body>
+  </html>
+  `);
 });
 
-app.post("/produtos", async (req, res) => {
+app.get("/produtos-ui", async (req, res) => {
+  const produtos = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
+
+  let lista = produtos.rows.map(p => `
+    <tr>
+      <td>${p.nome}</td>
+      <td>R$ ${p.preco}</td>
+      <td>${p.estoque}</td>
+    </tr>
+  `).join("");
+
+  res.send(`
+  <html>
+  <head>
+  <title>Produtos</title>
+  <style>
+  body { background:#0f0f0f; color:white; font-family:Arial; text-align:center;}
+  input { padding:8px; margin:5px; border-radius:5px; border:none;}
+  button { padding:10px 20px; background:#00ff88; border:none; border-radius:5px; cursor:pointer;}
+  table { margin:auto; margin-top:20px; border-collapse:collapse;}
+  td, th { padding:8px 15px; border-bottom:1px solid #333;}
+  a { color:#00ff88; text-decoration:none; display:block; margin-top:20px;}
+  </style>
+  </head>
+  <body>
+  <h2>Cadastro de Produto</h2>
+  <form method="POST" action="/produtos-form">
+    <input name="nome" placeholder="Nome do produto" required/>
+    <input name="preco" type="number" step="0.01" placeholder="Preço" required/>
+    <input name="estoque" type="number" placeholder="Estoque" required/>
+    <br><br>
+    <button type="submit">Cadastrar</button>
+  </form>
+
+  <table>
+    <tr><th>Nome</th><th>Preço</th><th>Estoque</th></tr>
+    ${lista}
+  </table>
+
+  <a href="/dashboard">⬅ Voltar</a>
+  </body>
+  </html>
+  `);
+});
+
+app.use(express.urlencoded({ extended: true }));
+
+app.post("/produtos-form", async (req, res) => {
   const { nome, preco, estoque } = req.body;
-  const result = await pool.query(
-    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3) RETURNING *",
+  await pool.query(
+    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3)",
     [nome, preco, estoque]
   );
-  res.json(result.rows[0]);
+  res.redirect("/produtos-ui");
 });
 
-// ==========================
-// CLIENTES
-// ==========================
-app.get("/clientes", async (req, res) => {
-  const result = await pool.query("SELECT * FROM clientes ORDER BY id DESC");
-  res.json(result.rows);
-});
-
-app.post("/clientes", async (req, res) => {
-  const { nome, telefone, email, endereco } = req.body;
-  const result = await pool.query(
-    "INSERT INTO clientes (nome, telefone, email, endereco) VALUES ($1,$2,$3,$4) RETURNING *",
-    [nome, telefone, email, endereco]
-  );
-  res.json(result.rows[0]);
-});
-
-// ==========================
-// PEDIDOS
-// ==========================
-app.post("/pedidos", async (req, res) => {
-  const { cliente_id, itens } = req.body;
-
-  let total = 0;
-
-  for (const item of itens) {
-    const produto = await pool.query(
-      "SELECT * FROM produtos WHERE id = $1",
-      [item.produto_id]
-    );
-
-    const preco = produto.rows[0].preco;
-    total += preco * item.quantidade;
-
-    await pool.query(
-      "UPDATE produtos SET estoque = estoque - $1 WHERE id = $2",
-      [item.quantidade, item.produto_id]
-    );
-  }
-
-  const pedido = await pool.query(
-    "INSERT INTO pedidos (cliente_id, total) VALUES ($1,$2) RETURNING *",
-    [cliente_id, total]
-  );
-
-  res.json({
-    mensagem: "Pedido criado com sucesso",
-    pedido_id: pedido.rows[0].id,
-    total,
-  });
-});
-
-// ==========================
 const PORT = process.env.PORT || 10000;
 
-app.listen(PORT, () => {
-  console.log("🚀 Servidor rodando...");
+app.listen(PORT, async () => {
+  await criarTabelas();
+  console.log("Servidor rodando...");
 });
