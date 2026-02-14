@@ -1,12 +1,33 @@
 const express = require("express");
+const { Pool } = require("pg");
+
 const app = express();
+app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("ERP Império Distribuidora Online 🚀");
+// =============================
+// CONEXÃO COM POSTGRES (Render)
+// =============================
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
-const PORT = process.env.PORT || 10000;
+// =============================
+// CRIAR TABELAS AUTOMATICAMENTE
+// =============================
+async function createTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS produtos (
+        id SERIAL PRIMARY KEY,
+        nome VARCHAR(150),
+        preco NUMERIC(10,2),
+        estoque INTEGER DEFAULT 0,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-app.listen(PORT, () => {
-  console.log("Servidor rodando...");
-});
+    console.log("✅ Tabelas criadas/verificadas com sucesso!");
+  } catch (error)
