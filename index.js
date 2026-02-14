@@ -1,10 +1,12 @@
 const express = require("express");
 const { Pool } = require("pg");
+const cors = require("cors");
 
 const app = express();
+
+app.use(cors());
 app.use(express.json());
 
-// Conexão com o banco (Render usa DATABASE_URL)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -12,7 +14,6 @@ const pool = new Pool({
   }
 });
 
-// Criar tabela automaticamente ao iniciar
 async function criarTabelas() {
   try {
     await pool.query(`
@@ -24,18 +25,16 @@ async function criarTabelas() {
       );
     `);
 
-    console.log("Tabela produtos verificada/criada com sucesso.");
+    console.log("Tabela produtos pronta.");
   } catch (err) {
     console.error("Erro ao criar tabela:", err);
   }
 }
 
-// Rota principal
 app.get("/", (req, res) => {
   res.send("ERP Império Distribuidora Online 🚀");
 });
 
-// Listar produtos
 app.get("/produtos", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM produtos ORDER BY id ASC");
@@ -45,7 +44,6 @@ app.get("/produtos", async (req, res) => {
   }
 });
 
-// Criar produto
 app.post("/produtos", async (req, res) => {
   const { nome, preco, estoque } = req.body;
 
