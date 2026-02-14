@@ -1,200 +1,192 @@
 const express = require("express");
+const { Pool } = require("pg");
 const cors = require("cors");
-const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-let produtos = [];
-let clientes = [];
-let pedidos = [];
-
-let produtoId = 1;
-let clienteId = 1;
-let pedidoId = 1;
-
-/* ================= DASHBOARD ================= */
-
-app.get("/dashboard", (req, res) => {
-  const vendasTotal = pedidos.reduce((acc, p) => acc + p.total, 0);
-  const estoqueBaixo = produtos.filter(p => p.estoque < 10).length;
-
-  res.json({
-    vendas_hoje: vendasTotal,
-    vendas_mes: vendasTotal,
-    total_pedidos: pedidos.length,
-    total_clientes: clientes.length,
-    produtos_estoque_baixo: estoqueBaixo
-  });
+// ===== CONEXÃO BANCO =====
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-/* ================= PRODUTOS ================= */
+// ===== CRIAR TABELAS =====
+async function criarTabelas() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS produtos (
+      id SERIAL PRIMARY KEY,
+      nome VARCHAR(100) NOT NULL,
+      preco NUMERIC(10,2) NOT NULL,
+      estoque INTEGER NOT NULL DEFAULT 0
+    );
+  `);
 
-app.get("/produtos", (req, res) => {
-  res.json(produtos);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clientes (
+      id SERIAL PRIMARY KEY,
+      nome VARCHAR(100) NOT NULL,
+      telefone VARCHAR(20),
+      email VARCHAR(100),
+      endereco VARCHAR(200),
+      criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pedidos (
+      id SERIAL PRIMARY KEY,
+      cliente_id INTEGER REFERENCES clientes(id),
+      total NUMERIC(10,2),
+      criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS itens_pedido (
+      id SERIAL PRIMARY KEY,
+      pedido_id INTEGER REFERENCES pedidos(id) ON DELETE CASCADE,
+      produto_id INTEGER REFERENCES produtos(id),
+      quantidade INTEGER NOT NULL,
+      preco_unitario NUMERIC(10,2)
+    );
+  `);
+
+  console.log("Tabelas verificadas/criadas.");
+}
+
+// =====================
+// ===== PRODUTOS =====
+// =====================
+
+app.get("/produtos", async (req, res) => {
+  const result = await pool.query("SELECT * FROM produtos ORDER BY id");
+  res.json(result.rows);
 });
 
-app.post("/produtos", (req, res) => {
+app.post("/produtos", async (req, res) => {
   const { nome, preco, estoque } = req.body;
-
-  const novoProduto = {
-    id: produtoId++,
-    nome,
-    preco: Number(preco),
-    estoque: Number(estoque)
-  };
-
-  produtos.push(novoProduto);
-  res.json(novoProduto);
+  const result = await pool.query(
+    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3) RETURNING *",
+    [nome, preco, estoque]
+  );
+  res.json(result.rows[0]);
 });
 
-/* ================= CLIENTES ================= */
+// =====================
+// ===== CLIENTES =====
+// =====================
 
-app.get("/clientes", (req, res) => {
-  res.json(clientes);
+app.get("/clientes", async (req, res) => {
+  const result = await pool.query("SELECT * FROM clientes ORDER BY id");
+  res.json(result.rows);
 });
 
-app.post("/clientes", (req, res) => {
+app.post("/clientes", async (req, res) => {
   const { nome, telefone, email, endereco } = req.body;
-
-  const novoCliente = {
-    id: clienteId++,
-    nome,
-    telefone,
-    email,
-    endereco,
-    criado_em: new Date()
-  };
-
-  clientes.push(novoCliente);
-  res.json(novoCliente);
+  const result = await pool.query(
+    "INSERT INTO clientes (nome, telefone, email, endereco) VALUES ($1,$2,$3,$4) RETURNING *",
+    [nome, telefone, email, endereco]
+  );
+  res.json(result.rows[0]);
 });
 
-/* ================= PEDIDOS ================= */
+// =====================
+// ===== PEDIDOS =====
+// =====================
 
-app.post("/pedidos", (req, res) => {
+app.post("/pedidos", async (req, res) => {
   const { cliente_id, itens } = req.body;
 
-  let total = 0;
+  const client = await pool.connect();
 
-  itens.forEach(item => {
-    const produto = produtos.find(p => p.id === item.produto_id);
+  try {
+    await client.query("BEGIN");
 
-    if (!produto) {
-      return res.status(400).json({ erro: "Produto não encontrado" });
+    let total = 0;
+
+    for (let item of itens) {
+      const produto = await client.query(
+        "SELECT * FROM produtos WHERE id = $1",
+        [item.produto_id]
+      );
+
+      if (produto.rows.length === 0) {
+        throw new Error("Produto não encontrado");
+      }
+
+      const preco = parseFloat(produto.rows[0].preco);
+      const subtotal = preco * item.quantidade;
+      total += subtotal;
+
+      if (produto.rows[0].estoque < item.quantidade) {
+        throw new Error("Estoque insuficiente");
+      }
+
+      await client.query(
+        "UPDATE produtos SET estoque = estoque - $1 WHERE id = $2",
+        [item.quantidade, item.produto_id]
+      );
     }
 
-    if (produto.estoque < item.quantidade) {
-      return res.status(400).json({ erro: "Estoque insuficiente" });
+    const pedido = await client.query(
+      "INSERT INTO pedidos (cliente_id, total) VALUES ($1,$2) RETURNING *",
+      [cliente_id, total]
+    );
+
+    for (let item of itens) {
+      const produto = await client.query(
+        "SELECT preco FROM produtos WHERE id = $1",
+        [item.produto_id]
+      );
+
+      await client.query(
+        "INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario) VALUES ($1,$2,$3,$4)",
+        [pedido.rows[0].id, item.produto_id, item.quantidade, produto.rows[0].preco]
+      );
     }
 
-    produto.estoque -= item.quantidade;
-    total += produto.preco * item.quantidade;
-  });
+    await client.query("COMMIT");
 
-  const novoPedido = {
-    id: pedidoId++,
-    cliente_id,
-    itens,
-    total,
-    criado_em: new Date()
-  };
+    res.json({
+      mensagem: "Pedido criado com sucesso",
+      pedido_id: pedido.rows[0].id,
+      total
+    });
 
-  pedidos.push(novoPedido);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ erro: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// =====================
+// ===== DASHBOARD =====
+// =====================
+
+app.get("/dashboard", async (req, res) => {
+
+  const vendas = await pool.query("SELECT COALESCE(SUM(total),0) FROM pedidos");
+  const totalPedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
+  const totalClientes = await pool.query("SELECT COUNT(*) FROM clientes");
+  const estoqueBaixo = await pool.query("SELECT COUNT(*) FROM produtos WHERE estoque <= 5");
 
   res.json({
-    mensagem: "Pedido criado com sucesso",
-    pedido_id: novoPedido.id,
-    total
+    vendas_totais: parseFloat(vendas.rows[0].coalesce),
+    total_pedidos: parseInt(totalPedidos.rows[0].count),
+    total_clientes: parseInt(totalClientes.rows[0].count),
+    produtos_estoque_baixo: parseInt(estoqueBaixo.rows[0].count)
   });
 });
 
-/* ================= PAINEL VISUAL ================= */
+// =====================
 
-app.get("/", (req, res) => {
-  res.send(`
-  <html>
-  <head>
-    <title>ERP Império Distribuidora</title>
-    <style>
-      body {
-        font-family: Arial;
-        background: #f5f6fa;
-        margin: 0;
-        padding: 30px;
-      }
-      h1 {
-        text-align: center;
-      }
-      .container {
-        max-width: 1000px;
-        margin: auto;
-      }
-      .cards {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 20px;
-        margin-top: 30px;
-      }
-      .card {
-        background: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-        text-align: center;
-      }
-      .valor {
-        font-size: 22px;
-        font-weight: bold;
-        color: #00b894;
-        margin-top: 10px;
-      }
-      .menu {
-        text-align: center;
-        margin-top: 40px;
-      }
-      .menu a {
-        margin: 10px;
-        padding: 10px 20px;
-        background: #0984e3;
-        color: white;
-        text-decoration: none;
-        border-radius: 5px;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <h1>🚀 ERP Império Distribuidora</h1>
-      <div class="cards">
-        <div class="card">
-          <div>Vendas Totais</div>
-          <div class="valor">R$ ${pedidos.reduce((acc, p) => acc + p.total, 0).toFixed(2)}</div>
-        </div>
-        <div class="card">
-          <div>Total Pedidos</div>
-          <div class="valor">${pedidos.length}</div>
-        </div>
-        <div class="card">
-          <div>Total Clientes</div>
-          <div class="valor">${clientes.length}</div>
-        </div>
-        <div class="card">
-          <div>Estoque Baixo</div>
-          <div class="valor">${produtos.filter(p => p.estoque < 10).length}</div>
-        </div>
-      </div>
+const PORT = process.env.PORT || 10000;
 
-      <div class="menu">
-        <a href="/produtos">Produtos</a>
-        <a href="/clientes">Clientes</a>
-      </div>
-    </div>
-  </body>
-  </html>
-  `);
+app.listen(PORT, async () => {
+  await criarTabelas();
+  console.log("🚀 ERP Império rodando...");
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Servidor rodando"));
