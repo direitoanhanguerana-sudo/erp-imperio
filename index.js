@@ -1,196 +1,170 @@
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* ===============================
-   CONEXÃO COM POSTGRES
-=================================*/
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  ssl: { rejectUnauthorized: false }
 });
 
-/* ===============================
-   CRIAR TABELAS AUTOMATICAMENTE
-=================================*/
+const PORT = process.env.PORT || 10000;
+const JWT_SECRET = process.env.JWT_SECRET || "segredo_super_forte";
+
+// =============================
+// CRIAR TABELAS AUTOMATICAMENTE
+// =============================
 async function criarTabelas() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS produtos (
-      id SERIAL PRIMARY KEY,
-      nome VARCHAR(100),
-      preco NUMERIC,
-      estoque INTEGER
-    );
-  `);
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clientes (
+        id SERIAL PRIMARY KEY,
+        nome VARCHAR(100),
+        telefone VARCHAR(20),
+        email VARCHAR(100)
+      );
+    `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS clientes (
-      id SERIAL PRIMARY KEY,
-      nome VARCHAR(100),
-      telefone VARCHAR(20),
-      email VARCHAR(100),
-      endereco VARCHAR(200),
-      criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS produtos (
+        id SERIAL PRIMARY KEY,
+        nome VARCHAR(100),
+        preco NUMERIC,
+        estoque INTEGER
+      );
+    `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pedidos (
-      id SERIAL PRIMARY KEY,
-      cliente_id INTEGER REFERENCES clientes(id),
-      total NUMERIC,
-      criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id SERIAL PRIMARY KEY,
+        cliente_id INTEGER REFERENCES clientes(id),
+        total NUMERIC,
+        data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log("Tabelas verificadas/criadas com sucesso");
+  } catch (err) {
+    console.error("Erro ao criar tabelas:", err);
+  }
 }
 
 criarTabelas();
 
-/* ===============================
-   DASHBOARD (ABERTO)
-=================================*/
-app.get("/dashboard", async (req, res) => {
-  const vendas = await pool.query(
-    "SELECT COALESCE(SUM(total),0) as total FROM pedidos"
-  );
+// =============================
+// MIDDLEWARE JWT
+// =============================
+function verificarToken(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: "Token não fornecido" });
 
-  const pedidos = await pool.query(
-    "SELECT COUNT(*) FROM pedidos"
-  );
+  try {
+    jwt.verify(token.split(" ")[1], JWT_SECRET);
+    next();
+  } catch {
+    res.status(403).json({ error: "Token inválido" });
+  }
+}
 
-  const clientes = await pool.query(
-    "SELECT COUNT(*) FROM clientes"
-  );
+// =============================
+// LOGIN SIMPLES
+// =============================
+app.post("/login", (req, res) => {
+  const { usuario, senha } = req.body;
 
-  const estoqueBaixo = await pool.query(
-    "SELECT COUNT(*) FROM produtos WHERE estoque < 10"
-  );
+  if (usuario === "admin" && senha === "1234") {
+    const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: "8h" });
+    return res.json({ token });
+  }
 
-  res.send(`
-  <html>
-  <head>
-    <title>ERP Império Distribuidora</title>
-    <style>
-      body { font-family: Arial; background:#f4f6f9; text-align:center; }
-      h1 { margin-top:30px; }
-      .card { 
-        display:inline-block;
-        background:white;
-        padding:20px;
-        margin:15px;
-        border-radius:10px;
-        box-shadow:0 4px 8px rgba(0,0,0,0.1);
-        width:200px;
-      }
-      .valor { font-size:22px; color:#27ae60; margin-top:10px; }
-      .btn {
-        padding:10px 20px;
-        background:#2980b9;
-        color:white;
-        border:none;
-        border-radius:5px;
-        cursor:pointer;
-        margin:5px;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>🚀 ERP Império Distribuidora</h1>
-
-    <div class="card">
-      <div>Vendas Totais</div>
-      <div class="valor">R$ ${vendas.rows[0].total}</div>
-    </div>
-
-    <div class="card">
-      <div>Total Pedidos</div>
-      <div class="valor">${pedidos.rows[0].count}</div>
-    </div>
-
-    <div class="card">
-      <div>Total Clientes</div>
-      <div class="valor">${clientes.rows[0].count}</div>
-    </div>
-
-    <div class="card">
-      <div>Estoque Baixo</div>
-      <div class="valor">${estoqueBaixo.rows[0].count}</div>
-    </div>
-
-    <br/><br/>
-    <a href="/produtos"><button class="btn">Produtos</button></a>
-    <a href="/clientes"><button class="btn">Clientes</button></a>
-  </body>
-  </html>
-  `);
+  res.status(401).json({ error: "Credenciais inválidas" });
 });
 
-/* ===============================
-   PRODUTOS
-=================================*/
-app.get("/produtos", async (req, res) => {
-  const result = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
-  res.json(result.rows);
+// =============================
+// DASHBOARD
+// =============================
+app.get("/dashboard", verificarToken, async (req, res) => {
+  try {
+    const vendas = await pool.query("SELECT COALESCE(SUM(total),0) FROM pedidos");
+    const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
+    const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
+    const estoqueBaixo = await pool.query("SELECT COUNT(*) FROM produtos WHERE estoque < 5");
+
+    res.json({
+      vendas_totais: vendas.rows[0].coalesce,
+      total_pedidos: pedidos.rows[0].count,
+      total_clientes: clientes.rows[0].count,
+      produtos_estoque_baixo: estoqueBaixo.rows[0].count
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erro no dashboard" });
+  }
 });
 
-app.post("/produtos", async (req, res) => {
-  const { nome, preco, estoque } = req.body;
+// =============================
+// PÁGINA INICIAL (ERP VISUAL)
+// =============================
+app.get("/", async (req, res) => {
+  try {
+    const vendas = await pool.query("SELECT COALESCE(SUM(total),0) FROM pedidos");
+    const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
+    const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
+    const estoqueBaixo = await pool.query("SELECT COUNT(*) FROM produtos WHERE estoque < 5");
 
-  const result = await pool.query(
-    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3) RETURNING *",
-    [nome, preco, estoque]
-  );
+    res.send(`
+      <html>
+      <head>
+        <title>ERP Império Distribuidora</title>
+        <style>
+          body { font-family: Arial; background:#ffffff; text-align:center; }
+          h1 { margin-top:30px; }
+          .card {
+            display:inline-block;
+            margin:15px;
+            padding:20px;
+            border-radius:10px;
+            box-shadow:0 0 10px rgba(0,0,0,0.1);
+            width:200px;
+          }
+          .valor { font-size:20px; color:#2e7d32; margin-top:10px; }
+        </style>
+      </head>
+      <body>
+        <h1>🚀 ERP Império Distribuidora</h1>
 
-  res.json(result.rows[0]);
+        <div class="card">
+          <div>Vendas Totais</div>
+          <div class="valor">R$ ${vendas.rows[0].coalesce}</div>
+        </div>
+
+        <div class="card">
+          <div>Total Pedidos</div>
+          <div class="valor">${pedidos.rows[0].count}</div>
+        </div>
+
+        <div class="card">
+          <div>Total Clientes</div>
+          <div class="valor">${clientes.rows[0].count}</div>
+        </div>
+
+        <div class="card">
+          <div>Estoque Baixo</div>
+          <div class="valor">${estoqueBaixo.rows[0].count}</div>
+        </div>
+
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send("Erro ao carregar ERP");
+  }
 });
 
-/* ===============================
-   CLIENTES
-=================================*/
-app.get("/clientes", async (req, res) => {
-  const result = await pool.query("SELECT * FROM clientes ORDER BY id DESC");
-  res.json(result.rows);
-});
-
-app.post("/clientes", async (req, res) => {
-  const { nome, telefone, email, endereco } = req.body;
-
-  const result = await pool.query(
-    "INSERT INTO clientes (nome, telefone, email, endereco) VALUES ($1,$2,$3,$4) RETURNING *",
-    [nome, telefone, email, endereco]
-  );
-
-  res.json(result.rows[0]);
-});
-
-/* ===============================
-   PEDIDOS
-=================================*/
-app.post("/pedidos", async (req, res) => {
-  const { cliente_id, total } = req.body;
-
-  const result = await pool.query(
-    "INSERT INTO pedidos (cliente_id, total) VALUES ($1,$2) RETURNING *",
-    [cliente_id, total]
-  );
-
-  res.json({
-    mensagem: "Pedido criado com sucesso",
-    pedido: result.rows[0],
-  });
-});
-
-/* ===============================
-   SERVIDOR
-=================================*/
-const PORT = process.env.PORT || 10000;
-
+// =============================
 app.listen(PORT, () => {
-  console.log("Servidor rodando na porta", PORT);
+  console.log("Servidor rodando na porta " + PORT);
 });
