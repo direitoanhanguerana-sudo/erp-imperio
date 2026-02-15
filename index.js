@@ -7,8 +7,12 @@ app.use(express.json());
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false }
 });
+
+/* =========================
+   CRIAR TABELAS AUTOMATICAMENTE
+========================= */
 
 async function criarTabelas() {
   await pool.query(`
@@ -28,57 +32,69 @@ async function criarTabelas() {
       email VARCHAR(100)
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pedidos (
+      id SERIAL PRIMARY KEY,
+      cliente_id INTEGER REFERENCES clientes(id),
+      produto_id INTEGER REFERENCES produtos(id),
+      quantidade INTEGER NOT NULL,
+      total NUMERIC(10,2) NOT NULL,
+      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 }
 
 criarTabelas();
 
+/* =========================
+   DASHBOARD
+========================= */
 
-// ======================
-// PÁGINA INICIAL
-// ======================
 app.get("/", async (req, res) => {
+
   const produtos = await pool.query("SELECT COUNT(*) FROM produtos");
   const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
+  const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
+  const vendas = await pool.query("SELECT COALESCE(SUM(total),0) FROM pedidos");
 
   res.send(`
     <h1>🚀 ERP Império Distribuidora</h1>
     <p>Produtos: ${produtos.rows[0].count}</p>
     <p>Clientes: ${clientes.rows[0].count}</p>
-
-    <a href="/produtos">Produtos</a><br/>
-    <a href="/clientes">Clientes</a>
+    <p>Pedidos: ${pedidos.rows[0].count}</p>
+    <p>Vendas Totais: R$ ${vendas.rows[0].coalesce}</p>
+    <br>
+    <a href="/produtos">Produtos</a><br>
+    <a href="/clientes">Clientes</a><br>
+    <a href="/pedidos">Pedidos</a>
   `);
 });
 
+/* =========================
+   PRODUTOS
+========================= */
 
-// ======================
-// PRODUTOS
-// ======================
 app.get("/produtos", async (req, res) => {
   const lista = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
 
   res.send(`
     <h2>Produtos</h2>
-
     <form method="POST" action="/produtos">
-      <input name="nome" placeholder="Nome" required />
-      <input name="preco" type="number" step="0.01" placeholder="Preço" required />
-      <input name="estoque" type="number" placeholder="Estoque" required />
-      <button type="submit">Salvar</button>
+      <input name="nome" placeholder="Nome">
+      <input name="preco" type="number" step="0.01" placeholder="Preço">
+      <input name="estoque" type="number" placeholder="Estoque">
+      <button>Salvar</button>
     </form>
-
-    <hr/>
-
+    <hr>
     ${lista.rows.map(p => `
-      <p>
-        ${p.nome} - R$ ${p.preco} - Estoque: ${p.estoque}
-        <form method="POST" action="/produtos/deletar/${p.id}" style="display:inline;">
-          <button type="submit">Excluir</button>
-        </form>
-      </p>
+      ${p.nome} - R$ ${p.preco} - Estoque: ${p.estoque}
+      <form method="POST" action="/deletar-produto/${p.id}">
+        <button>Excluir</button>
+      </form>
+      <hr>
     `).join("")}
-
-    <br/><a href="/">Voltar</a>
+    <a href="/">Voltar</a>
   `);
 });
 
@@ -91,40 +107,35 @@ app.post("/produtos", async (req, res) => {
   res.redirect("/produtos");
 });
 
-app.post("/produtos/deletar/:id", async (req, res) => {
+app.post("/deletar-produto/:id", async (req, res) => {
   await pool.query("DELETE FROM produtos WHERE id=$1", [req.params.id]);
   res.redirect("/produtos");
 });
 
+/* =========================
+   CLIENTES
+========================= */
 
-// ======================
-// CLIENTES
-// ======================
 app.get("/clientes", async (req, res) => {
   const lista = await pool.query("SELECT * FROM clientes ORDER BY id DESC");
 
   res.send(`
     <h2>Clientes</h2>
-
     <form method="POST" action="/clientes">
-      <input name="nome" placeholder="Nome" required />
-      <input name="telefone" placeholder="Telefone" />
-      <input name="email" placeholder="Email" />
-      <button type="submit">Salvar</button>
+      <input name="nome" placeholder="Nome">
+      <input name="telefone" placeholder="Telefone">
+      <input name="email" placeholder="Email">
+      <button>Salvar</button>
     </form>
-
-    <hr/>
-
+    <hr>
     ${lista.rows.map(c => `
-      <p>
-        ${c.nome} - ${c.telefone || ""} - ${c.email || ""}
-        <form method="POST" action="/clientes/deletar/${c.id}" style="display:inline;">
-          <button type="submit">Excluir</button>
-        </form>
-      </p>
+      ${c.nome} - ${c.telefone}
+      <form method="POST" action="/deletar-cliente/${c.id}">
+        <button>Excluir</button>
+      </form>
+      <hr>
     `).join("")}
-
-    <br/><a href="/">Voltar</a>
+    <a href="/">Voltar</a>
   `);
 });
 
@@ -137,13 +148,82 @@ app.post("/clientes", async (req, res) => {
   res.redirect("/clientes");
 });
 
-app.post("/clientes/deletar/:id", async (req, res) => {
+app.post("/deletar-cliente/:id", async (req, res) => {
   await pool.query("DELETE FROM clientes WHERE id=$1", [req.params.id]);
   res.redirect("/clientes");
 });
 
+/* =========================
+   PEDIDOS (VENDA REAL)
+========================= */
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("Servidor rodando 🚀");
+app.get("/pedidos", async (req, res) => {
+
+  const clientes = await pool.query("SELECT * FROM clientes");
+  const produtos = await pool.query("SELECT * FROM produtos");
+  const lista = await pool.query(`
+    SELECT pedidos.*, clientes.nome AS cliente_nome, produtos.nome AS produto_nome
+    FROM pedidos
+    JOIN clientes ON pedidos.cliente_id = clientes.id
+    JOIN produtos ON pedidos.produto_id = produtos.id
+    ORDER BY pedidos.id DESC
+  `);
+
+  res.send(`
+    <h2>Novo Pedido</h2>
+    <form method="POST" action="/pedidos">
+      <select name="cliente_id">
+        ${clientes.rows.map(c => `<option value="${c.id}">${c.nome}</option>`).join("")}
+      </select>
+
+      <select name="produto_id">
+        ${produtos.rows.map(p => `<option value="${p.id}">${p.nome} (Estoque: ${p.estoque})</option>`).join("")}
+      </select>
+
+      <input name="quantidade" type="number" placeholder="Quantidade">
+      <button>Vender</button>
+    </form>
+    <hr>
+    <h3>Pedidos Realizados</h3>
+    ${lista.rows.map(p => `
+      ${p.cliente_nome} comprou ${p.quantidade}x ${p.produto_nome}
+      - Total R$ ${p.total}
+      <hr>
+    `).join("")}
+    <a href="/">Voltar</a>
+  `);
 });
+
+app.post("/pedidos", async (req, res) => {
+  const { cliente_id, produto_id, quantidade } = req.body;
+
+  const produto = await pool.query(
+    "SELECT * FROM produtos WHERE id=$1",
+    [produto_id]
+  );
+
+  if (produto.rows.length === 0) return res.send("Produto não encontrado");
+
+  const estoqueAtual = produto.rows[0].estoque;
+
+  if (estoqueAtual < quantidade)
+    return res.send("Estoque insuficiente");
+
+  const total = produto.rows[0].preco * quantidade;
+
+  await pool.query(
+    "INSERT INTO pedidos (cliente_id, produto_id, quantidade, total) VALUES ($1,$2,$3,$4)",
+    [cliente_id, produto_id, quantidade, total]
+  );
+
+  await pool.query(
+    "UPDATE produtos SET estoque = estoque - $1 WHERE id=$2",
+    [quantidade, produto_id]
+  );
+
+  res.redirect("/pedidos");
+});
+
+/* ========================= */
+
+app.listen(3000, () => console.log("Servidor rodando 🚀"));
