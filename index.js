@@ -1,191 +1,110 @@
-const express = require("express");
-const { Pool } = require("pg");
+const express = require('express');
+const session = require('express-session');
+const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
 
-// =============================
-// CONEXÃO BANCO
-// =============================
+// ================= DATABASE =================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// =============================
-// CRIAR TABELAS AUTOMATICAMENTE
-// =============================
+// ================= SESSION =================
+app.use(session({
+  secret: 'imperio-seguro',
+  resave: false,
+  saveUninitialized: false
+}));
+
+// ================= AUTH MIDDLEWARE =================
+function checkAuth(req, res, next) {
+  if (!req.session.usuario) {
+    return res.redirect('/login');
+  }
+  next();
+}
+
+// ================= CRIAR TABELAS =================
 async function criarTabelas() {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS produtos (
+    CREATE TABLE IF NOT EXISTS usuarios (
       id SERIAL PRIMARY KEY,
-      nome TEXT NOT NULL,
-      preco NUMERIC NOT NULL,
-      estoque INTEGER NOT NULL
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS clientes (
-      id SERIAL PRIMARY KEY,
-      nome TEXT NOT NULL,
-      telefone TEXT,
-      email TEXT
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pedidos (
-      id SERIAL PRIMARY KEY,
-      cliente_id INTEGER REFERENCES clientes(id),
-      total NUMERIC DEFAULT 0,
-      data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+      usuario TEXT UNIQUE NOT NULL,
+      senha TEXT NOT NULL
+    )
   `);
 }
 
 criarTabelas();
 
-// =============================
-// DASHBOARD
-// =============================
-app.get("/", async (req, res) => {
-  const produtos = await pool.query("SELECT COUNT(*) FROM produtos");
-  const clientes = await pool.query("SELECT COUNT(*) FROM clientes");
-  const pedidos = await pool.query("SELECT COUNT(*) FROM pedidos");
-  const vendas = await pool.query("SELECT COALESCE(SUM(total),0) FROM pedidos");
+// ================= ROTA CRIAR ADMIN (PRIMEIRA VEZ) =================
+app.get('/criar-admin', async (req, res) => {
+  const senhaHash = await bcrypt.hash('123456', 10);
 
+  await pool.query(`
+    INSERT INTO usuarios (usuario, senha)
+    VALUES ($1, $2)
+    ON CONFLICT (usuario) DO NOTHING
+  `, ['admin', senhaHash]);
+
+  res.send('Admin criado! Usuário: admin | Senha: 123456');
+});
+
+// ================= LOGIN =================
+app.get('/login', (req, res) => {
+  res.send(`
+    <h2>Login - ERP Império</h2>
+    <form method="POST">
+      <input name="usuario" placeholder="Usuário" required />
+      <input name="senha" type="password" placeholder="Senha" required />
+      <button type="submit">Entrar</button>
+    </form>
+  `);
+});
+
+app.post('/login', async (req, res) => {
+  const { usuario, senha } = req.body;
+
+  const result = await pool.query(
+    'SELECT * FROM usuarios WHERE usuario = $1',
+    [usuario]
+  );
+
+  if (result.rows.length === 0) {
+    return res.send('Usuário não encontrado');
+  }
+
+  const user = result.rows[0];
+  const senhaValida = await bcrypt.compare(senha, user.senha);
+
+  if (!senhaValida) {
+    return res.send('Senha incorreta');
+  }
+
+  req.session.usuario = user.usuario;
+  res.redirect('/');
+});
+
+// ================= LOGOUT =================
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login');
+});
+
+// ================= DASHBOARD =================
+app.get('/', checkAuth, (req, res) => {
   res.send(`
     <h1>🚀 ERP Império Distribuidora</h1>
-    <p>Produtos: ${produtos.rows[0].count}</p>
-    <p>Clientes: ${clientes.rows[0].count}</p>
-    <p>Pedidos: ${pedidos.rows[0].count}</p>
-    <p>Vendas Totais: R$ ${vendas.rows[0].coalesce}</p>
-    <br/>
-    <a href="/produtos">Produtos</a><br/>
-    <a href="/clientes">Clientes</a><br/>
-    <a href="/pedidos">Pedidos</a>
+    <p>Usuário logado: ${req.session.usuario}</p>
+    <a href="/logout">Sair</a>
   `);
 });
 
-// =============================
-// PRODUTOS
-// =============================
-app.get("/produtos", async (req, res) => {
-  const produtos = await pool.query("SELECT * FROM produtos ORDER BY id DESC");
-
-  let lista = "";
-  produtos.rows.forEach(p => {
-    lista += `
-      <div>
-        ${p.nome} - R$ ${p.preco} - Estoque: ${p.estoque}
-        <form method="POST" action="/produtos/excluir/${p.id}" style="display:inline;">
-          <button type="submit">Excluir</button>
-        </form>
-      </div>
-    `;
-  });
-
-  res.send(`
-    <h1>Produtos</h1>
-    <form method="POST" action="/produtos">
-      <input name="nome" placeholder="Nome" required />
-      <input name="preco" placeholder="Preço" required />
-      <input name="estoque" placeholder="Estoque" required />
-      <button type="submit">Salvar</button>
-    </form>
-    <hr/>
-    ${lista}
-    <br/>
-    <a href="/">Voltar</a>
-  `);
-});
-
-app.post("/produtos", async (req, res) => {
-  const { nome, preco, estoque } = req.body;
-  await pool.query(
-    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1,$2,$3)",
-    [nome, preco, estoque]
-  );
-  res.redirect("/produtos");
-});
-
-app.post("/produtos/excluir/:id", async (req, res) => {
-  await pool.query("DELETE FROM produtos WHERE id=$1", [req.params.id]);
-  res.redirect("/produtos");
-});
-
-// =============================
-// CLIENTES
-// =============================
-app.get("/clientes", async (req, res) => {
-  const clientes = await pool.query("SELECT * FROM clientes ORDER BY id DESC");
-
-  let lista = "";
-  clientes.rows.forEach(c => {
-    lista += `
-      <div>
-        ${c.nome} - ${c.telefone || ""} - ${c.email || ""}
-        <form method="POST" action="/clientes/excluir/${c.id}" style="display:inline;">
-          <button type="submit">Excluir</button>
-        </form>
-      </div>
-    `;
-  });
-
-  res.send(`
-    <h1>Clientes</h1>
-    <form method="POST" action="/clientes">
-      <input name="nome" placeholder="Nome" required />
-      <input name="telefone" placeholder="Telefone" />
-      <input name="email" placeholder="Email" />
-      <button type="submit">Salvar</button>
-    </form>
-    <hr/>
-    ${lista}
-    <br/>
-    <a href="/">Voltar</a>
-  `);
-});
-
-app.post("/clientes", async (req, res) => {
-  const { nome, telefone, email } = req.body;
-  await pool.query(
-    "INSERT INTO clientes (nome, telefone, email) VALUES ($1,$2,$3)",
-    [nome, telefone, email]
-  );
-  res.redirect("/clientes");
-});
-
-app.post("/clientes/excluir/:id", async (req, res) => {
-  await pool.query("DELETE FROM clientes WHERE id=$1", [req.params.id]);
-  res.redirect("/clientes");
-});
-
-// =============================
-// PEDIDOS
-// =============================
-app.get("/pedidos", async (req, res) => {
-  const pedidos = await pool.query("SELECT * FROM pedidos ORDER BY id DESC");
-
-  let lista = "";
-  pedidos.rows.forEach(p => {
-    lista += `
-      <div>
-        Pedido #${p.id} - Total: R$ ${p.total}
-      </div>
-    `;
-  });
-
-  res.send(`
-    <h1>Pedidos</h1>
-    ${lista}
-    <br/>
-    <a href="/">Voltar</a>
-  `);
-});
-
-// =============================
+// ================= START SERVER =================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Servidor rodando 🚀"));
+app.listen(PORT, () => {
+  console.log('Servidor rodando...');
+});
