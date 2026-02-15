@@ -1,6 +1,8 @@
+
 {
   "name": "erp-imperio",
   "version": "1.0.0",
+  "description": "ERP Império Distribuidora",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
