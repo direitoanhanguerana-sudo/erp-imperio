@@ -65,3 +65,31 @@ app.get("/", async (req, res) => {
           </td>
         </tr>
       `
+        )
+        .join("")}
+    </table>
+  `);
+});
+
+// Criar produto
+app.post("/produtos", async (req, res) => {
+  const { nome, preco, estoque } = req.body;
+
+  await pool.query(
+    "INSERT INTO produtos (nome, preco, estoque) VALUES ($1, $2, $3)",
+    [nome, preco, estoque]
+  );
+
+  res.redirect("/");
+});
+
+// Excluir produto
+app.post("/deletar/:id", async (req, res) => {
+  await pool.query("DELETE FROM produtos WHERE id = $1", [req.params.id]);
+  res.redirect("/");
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log("Servidor rodando...");
+});
