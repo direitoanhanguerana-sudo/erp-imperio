@@ -1,46 +1,45 @@
 const express = require("express");
 const { Pool } = require("pg");
 const path = require("path");
+const session = require("express-session");
 
 const app = express();
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.static("public"));
+
+/* =========================
+   SESSÃO (LOGIN REAL)
+========================= */
+app.use(
+  session({
+    secret: "imperio-erp-secreto",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
 
 /* =========================
    CONEXÃO BANCO
 ========================= */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
 });
 
 /* =========================
-   CRIAR TABELAS AUTOMÁTICO
+   CRIAR TABELAS
 ========================= */
 async function criarTabelas() {
   try {
-
-    // USUÁRIOS
     await pool.query(`
       CREATE TABLE IF NOT EXISTS usuarios (
-        id SERIAL PRIMARY KEY
+        id SERIAL PRIMARY KEY,
+        usuario TEXT UNIQUE,
+        senha TEXT,
+        nivel TEXT
       );
-    `);
-
-    await pool.query(`
-      ALTER TABLE usuarios
-      ADD COLUMN IF NOT EXISTS usuario TEXT UNIQUE;
-    `);
-
-    await pool.query(`
-      ALTER TABLE usuarios
-      ADD COLUMN IF NOT EXISTS senha TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE usuarios
-      ADD COLUMN IF NOT EXISTS nivel TEXT;
     `);
 
     await pool.query(`
@@ -51,47 +50,30 @@ async function criarTabelas() {
       );
     `);
 
-    // PRODUTOS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS produtos (
-        id SERIAL PRIMARY KEY,
-        nome TEXT NOT NULL,
-        preco NUMERIC NOT NULL,
-        estoque INTEGER NOT NULL
-      );
-    `);
-
-    // CLIENTES
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS clientes (
-        id SERIAL PRIMARY KEY,
-        nome TEXT NOT NULL,
-        telefone TEXT
-      );
-    `);
-
-    // PEDIDOS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS pedidos (
-        id SERIAL PRIMARY KEY,
-        cliente_id INTEGER REFERENCES clientes(id),
-        total NUMERIC,
-        data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    console.log("Tabelas verificadas com sucesso ✅");
-
+    console.log("Banco pronto ✅");
   } catch (err) {
-    console.error("Erro ao criar tabelas:", err);
+    console.error(err);
   }
 }
-
 criarTabelas();
 
 /* =========================
-   LOGIN
+   MIDDLEWARE DE PROTEÇÃO
 ========================= */
+function verificarLogin(req, res, next) {
+  if (!req.session.usuario) {
+    return res.redirect("/");
+  }
+  next();
+}
+
+/* =========================
+   ROTAS
+========================= */
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
 
 app.post("/login", async (req, res) => {
   const { usuario, senha } = req.body;
@@ -103,32 +85,30 @@ app.post("/login", async (req, res) => {
     );
 
     if (result.rows.length > 0) {
-      res.json({ success: true });
+      req.session.usuario = usuario;
+      res.redirect("/dashboard");
     } else {
-      res.json({ success: false });
+      res.send("Usuário ou senha inválidos");
     }
   } catch (err) {
     console.error(err);
-    res.status(500).send("Erro no login");
+    res.send("Erro no login");
   }
 });
 
-/* =========================
-   ROTAS PRINCIPAIS
-========================= */
-
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "login.html"));
+app.get("/dashboard", verificarLogin, (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
-app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+app.get("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.redirect("/");
+  });
 });
 
 /* =========================
    PORTA
 ========================= */
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor rodando 🚀");
